@@ -1,2 +1,2 @@
 # AWS-Rust-ETL
-Simple ETL demonstrated on Rust in AWS
+Simple ETL demonstrated in Rust on AWS
