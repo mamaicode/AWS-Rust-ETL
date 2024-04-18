@@ -1,6 +1,8 @@
+use aws_config::BehaviorVersion;
 use aws_lambda_events::event::s3::S3Event;
-use aws_sdk_s3::Client;
-use lambda_runtime::{run, service_fn, Error, LambdaEvent};
+use lambda_runtime::{service_fn, tracing, Error, LambdaEvent};
+
+use tokio::io::AsyncReadExt;
 
 /// Main function
 #[tokio::main]
@@ -11,29 +13,40 @@ async fn main() -> Result<(), Error> {
         .without_time()
         .init();
 
-    // Initialize the AWS SDK for Rust
-    let config = aws_config::load_from_env().await;
-    let s3_client = Client::new(&config);
+    let config = aws_config::load_defaults(BehaviorVersion::latest()).await;
+    let s3_client = aws_sdk_s3::Client::new(&config);
+    let textract_client = aws_sdk_textract::Client::new(&config);
 
-    let res = run(service_fn(|request: LambdaEvent<S3Event>| {
-        function_handler(&s3_client, request)
-    })).await;
-
-    res
+    let func = service_fn(|request: LambdaEvent<S3Event>| {
+        function_handler(&s3_client, &textract_client, request)
+    });
+    lambda_runtime::run(func).await?;
+    Ok(())
 }
 
 async fn function_handler(
-    s3_client: &Client,
-    evt: LambdaEvent<S3Event>
+    s3_client: &aws_sdk_s3::Client,
+    textract_client: &aws_sdk_textract::Client,
+    request: LambdaEvent<S3Event>,
 ) -> Result<(), Error> {
-    tracing::info!(records = ?evt.payload.records.len(), "Received request from SQS");
-
-    if evt.payload.records.len() == 0 {
+    tracing::info!(records = ?request.payload.records.len(), "Received request from SQS");
+    if request.payload.records.is_empty() {
         tracing::info!("Empty S3 event received");
+        return Ok(());
     }
 
-    let bucket = evt.payload.records[0].s3.bucket.name.as_ref().expect("Bucket name to exist");
-    let key = evt.payload.records[0].s3.object.key.as_ref().expect("Object key to exist");
+    let bucket = request.payload.records[0]
+        .s3
+        .bucket
+        .name
+        .as_ref()
+        .expect("Bucket name to exist");
+    let key = request.payload.records[0]
+        .s3
+        .object
+        .key
+        .as_ref()
+        .expect("Object key to exist");
 
     tracing::info!("Request is for {} and object {}", bucket, key);
 
@@ -42,12 +55,20 @@ async fn function_handler(
         .bucket(bucket)
         .key(key)
         .send()
-        .await;
+        .await?;
 
-    match s3_get_object_result {
-        Ok(_) => tracing::info!("S3 Get Object success, the s3GetObjectResult contains a 'body' property of type ByteStream"),
-        Err(_) => tracing::info!("Failure with S3 Get Object request")
-    }
+    // Extract image bytes from S3 object ?
+    let mut body = s3_get_object_result.body.into_async_read();
+    let mut image_bytes = Vec::new();
+    body.read_to_end(&mut image_bytes).await?;
+
+    // textract
+    let response = textract_client
+        .start_document_text_detection()
+        .job_tag("testtag")
+        .send()
+        .await?;
+    tracing::info!("Textract response: {:?}", response);
 
     Ok(())
 }
