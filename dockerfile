@@ -10,6 +10,6 @@ FROM debian:buster-slim
 
 WORKDIR /usr/src/app
 
-COPY --from=builder /usr/src/app/target/release/your_binary_name .
+COPY --from=builder /usr/src/app/target/release/aws_rust_etl .
 
-CMD ["./rustetl"]
+CMD ["./aws_rust_etl"]
